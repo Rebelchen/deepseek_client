@@ -1,0 +1,8 @@
+# DeepSeek 本地问答系统 — Python 依赖
+# 安装：pip install -r requirements.txt（或 pip install -e .）
+
+openai>=1.0.0        # DeepSeek API 客户端（兼容 OpenAI SDK）
+pywebview>=6.0       # Edge WebView2 桌面窗口
+flask>=3.0           # 内嵌 HTTP 服务器（SSE 流式接口）
+markdown>=3.0        # Markdown → HTML 转换
+pygments>=2.0        # 代码语法高亮
