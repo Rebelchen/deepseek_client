@@ -29,7 +29,9 @@ class WriteFileRedirectTest(unittest.TestCase):
         self.assertIn("总结", result)
 
     def test_absolute_path_uses_basename(self):
-        result = tools.write_file(r"E:\somewhere\report.md", "# hi")
+        # 跨平台绝对路径（Windows: C:\somewhere\report.md / Linux: /somewhere/report.md）
+        abs_path = os.path.join(os.path.abspath(os.sep), "somewhere", "report.md")
+        result = tools.write_file(abs_path, "# hi")
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "report.md")))
         self.assertIn("总结", result)
 
@@ -55,4 +57,5 @@ class ToolDispatchTest(unittest.TestCase):
         self.assertIn("未知工具", tools.execute_tool("no_such_tool", {}))
 
     def test_read_file_missing(self):
-        self.assertIn("文件不存在", tools.read_file(r"Z:\definitely\missing.txt"))
+        missing = os.path.join(os.path.abspath(os.sep), "definitely", "missing.txt")
+        self.assertIn("文件不存在", tools.read_file(missing))
