@@ -6,7 +6,7 @@
 
 ## config — 全局配置
 
-**文件：** [config.py](file:///d:/pythonProject/deepseek_client/config.py)
+**文件：** [config.py](../config.py)
 
 ### 常量
 
@@ -34,7 +34,7 @@
 
 ## core.prompts — 系统提示词
 
-**文件：** [core/prompts.py](file:///d:/pythonProject/deepseek_client/core/prompts.py)
+**文件：** [core/prompts.py](../core/prompts.py)
 
 #### `build_system_prompt(enable_search=None) → str`
 
@@ -48,7 +48,7 @@
 
 ## core.chat — API 会话管理
 
-**文件：** [core/chat.py](file:///d:/pythonProject/deepseek_client/core/chat.py)
+**文件：** [core/chat.py](../core/chat.py)
 
 ### ChatSession
 
@@ -104,7 +104,7 @@
 
 ## core.history — 聊天记录管理
 
-**文件：** [core/history.py](file:///d:/pythonProject/deepseek_client/core/history.py)
+**文件：** [core/history.py](../core/history.py)
 
 ### 函数
 
@@ -185,7 +185,7 @@
 
 ## core.tools — 文件操作工具箱
 
-**文件：** [core/tools.py](file:///d:/pythonProject/deepseek_client/core/tools.py)
+**文件：** [core/tools.py](../core/tools.py)
 
 ### 常量
 
@@ -245,7 +245,7 @@
 
 ## ui.webview_app — pywebview + Flask 界面（当前主 UI）
 
-**文件：** [ui/webview_app.py](file:///d:/pythonProject/deepseek_client/ui/webview_app.py)
+**文件：** [ui/webview_app.py](../ui/webview_app.py)
 
 ### 启动函数
 
