@@ -22,8 +22,9 @@ DeepSeek 本地问答系统 — 程序入口
     pip install -e . && deepseek-client   # 安装后可直接用命令启动
 
 配置：
-  API Key 通过环境变量 DEEPSEEK_API_KEY 或项目根 .env 提供（见 .env.example）；
-  其余参数集中在 config.py，修改后重启生效。
+  默认来源的 API Key（默认 opencode GO 的 OPENCODE_GO_API_KEY，或官方 DEEPSEEK_API_KEY）
+  仅通过环境变量提供（推荐配置在虚拟环境激活脚本，见 scripts/setup_venv_keys.ps1）；
+  其余参数集中在 config.py，修改后重启生效。运行中可在界面顶部下拉框一键切换来源/模型。
 
 文档：
   docs/ 目录包含架构设计与 API 参考；tests/ 为单元测试。
@@ -60,13 +61,27 @@ def main():
     )
     args = parser.parse_args()
 
-    # 启动前校验 API Key：缺失时给出明确指引，避免运行时才报错
+    # 启动前校验默认来源的 API Key：缺失时给出明确指引，避免运行时才报错
     # （放在参数解析之后，保证 --help 等操作无需密钥也能执行）
-    if not config.API_KEY:
-        logging.error(
-            "未配置 DEEPSEEK_API_KEY。"
-            "请设置环境变量 DEEPSEEK_API_KEY，或在项目根目录创建 .env（参考 .env.example）。"
+    # 默认来源（config.SOURCE）见 config.py，界面内可随时切换其他来源
+    default_info = config.SOURCES.get(config.SOURCE, {})
+    if not default_info.get("api_key"):
+        msg = (
+            f"未配置 {default_info.get('env_key', 'API Key')}（默认来源「{default_info.get('label', config.SOURCE)}」需要）。\n\n"
+            f"请将其设置为环境变量后重新启动。\n"
+            f"推荐运行 scripts/setup_venv_keys.ps1 写入虚拟环境激活脚本。"
         )
+        logging.error("%s", msg)
+        # pythonw 启动时无控制台窗口，弹窗提示避免"点了没反应"
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("DeepSeek 本地问答 - 缺少 API Key", msg)
+            root.destroy()
+        except Exception:
+            pass
         sys.exit(1)
 
     launch(port=args.port)

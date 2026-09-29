@@ -13,9 +13,17 @@
 | 名称 | 类型 | 说明 |
 |------|------|------|
 | `VERSION` | str | 当前版本号 |
-| `API_KEY` | str | DeepSeek API 密钥（环境变量 `DEEPSEEK_API_KEY` 或 `.env` 提供，禁止硬编码） |
-| `BASE_URL` | str | API 端点地址 |
-| `MODEL` | str | 模型名称 |
+| `SOURCE` | str | 默认 API 来源：`opencode_go` / `official` / `zbigmodel` / `bailian_token_plan` / `stepfun` / `xiaomi_mimo`（环境变量 `SOURCE` 覆盖） |
+| `SOURCES` | dict | 各来源完整配置（端点、密钥、模型列表、能力开关），界面下拉框与 `ChatSession.configure()` 的唯一事实来源 |
+| `DEEPSEEK_API_KEY` | str | DeepSeek 官方 API 密钥（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
+| `OPENCODE_GO_API_KEY` | str | opencode GO 套餐 API Key（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
+| `ZBIGMODEL_API_KEY` | str | 智谱开放平台（BigModel）API Key（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
+| `BAILIAN_TOKEN_PLAN_API_KEY` | str | 阿里云百炼 Token Plan 套餐专用 API Key，`sk-sp-` 开头，只能配 Token Plan 专属端点（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
+| `STEPFUN_API_KEY` | str | 阶跃星辰（StepFun）开放平台 API Key，无 `sk-` 前缀的长随机串，配按量端点 `https://api.stepfun.com/v1`（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
+| `XIAOMI_MIMO_API_KEY` | str | 小米 MiMo 开放平台 API Key，`sk-` 开头，配按量端点 `https://api.xiaomimimo.com/v1`；`token-plan-*` 套餐端点不认它（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
+| `API_KEY` | str | 兼容别名，等价于 `DEEPSEEK_API_KEY` |
+| `BASE_URL` | str | 默认来源的 API 端点地址（运行中切换后以 `ChatSession` 内部值为准） |
+| `MODEL` | str | 默认来源的默认模型（运行中切换后以 `ChatSession` 内部值为准） |
 | `API_TIMEOUT` | int | 请求超时（秒） |
 | `API_MAX_RETRIES` | int | 最大重试次数 |
 | `TEMPERATURE` | float | 生成温度 (0-2) |
@@ -24,6 +32,7 @@
 | `PRESENCE_PENALTY` | float | 话题重复惩罚 (-2~2) |
 | `FREQUENCY_PENALTY` | float | 频率惩罚 (-2~2) |
 | `STOP` | str \| list \| None | 停止序列 |
+| `ENABLE_SEARCH` | bool | 联网工具总开关：控制 `web_search` / `fetch_webpage` 是否注册给模型 |
 | `PROJECT_ROOT` | str | 项目根目录绝对路径 |
 | `HISTORY_DIR` | str | 历史记录目录路径 |
 | `APP_TITLE` | str | 窗口标题 |
@@ -38,11 +47,41 @@
 
 #### `build_system_prompt(enable_search=None) → str`
 
-构建默认系统提示词（联网搜索说明 + LaTeX 公式格式要求）。
+构建默认系统提示词（联网工具使用说明 + LaTeX 公式格式要求）。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `enable_search` | bool \| None | None | 是否包含联网搜索说明；None 时取 `config.ENABLE_SEARCH` |
+
+---
+
+## core.search — 联网搜索与网页抓取
+
+**文件：** [core/search.py](../core/search.py)
+
+基于 Python 标准库实现，无需额外 API Key。供 `core.tools` 注册为 Function Calling 工具。
+
+#### `search_web(query, max_results=5) → str`
+
+使用 Bing RSS 搜索网页，返回格式化文本（标题 / 链接 / 摘要）。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `query` | str | - | 搜索关键词（必填） |
+| `max_results` | int | 5 | 返回结果条数（1-10） |
+
+**返回：** 搜索结果文本，或可读错误信息（网络失败时 AI 会把错误反馈给用户）。
+
+#### `fetch_webpage(url, max_chars=6000) → str`
+
+抓取网页并提取可读正文（去除 HTML 标签），用于阅读搜索结果中的完整页面。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `url` | str | - | 网页完整 URL（仅 http/https） |
+| `max_chars` | int | 6000 | 最多返回字符数（上限 20000） |
+
+**返回：** 页面标题 + 正文纯文本，或可读错误信息。
 
 ---
 
@@ -63,15 +102,35 @@
 | `tool_executor` | callable \| None | None | `(name, args) → str` 工具执行函数 |
 | `on_tool_call` | callable \| None | None | `(name, args) → None` UI 回调 |
 
+#### `configure(source=None, model=None) → self`
+
+运行中切换 API 来源与模型（无需重启），重建 OpenAI 客户端。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `source` | str \| None | `SOURCES` 的键（`official` / `opencode_go` / `zbigmodel` / `bailian_token_plan` / `stepfun` / `xiaomi_mimo`）；None 保持当前 |
+| `model` | str \| None | 该来源 `models` 列表中的模型名；None 保持当前 |
+
+**Raises：** `ValueError`（来源不存在 / 模型不属于该来源 / 缺少对应 API Key）
+
+示例：
+```python
+session.configure(source="official", model="deepseek-flash")
+session.configure(source="opencode_go", model="deepseek-v4-pro")
+session.configure(source="zbigmodel", model="glm-5.3-flash")
+```
+
 #### `ask(user_input) → str`
 
 发送用户消息，返回 AI 文本回复。内部自动处理 Function Calling 循环。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `user_input` | str | 用户输入文本 |
+| `user_input` | str \| list | 用户输入文本；或 OpenAI vision 多模态 content 列表（`[{"type": "text", ...}, {"type": "image_url", ...}]`，含图片时，仅识图模型接受） |
 
 **返回：** AI 回答文本，或错误提示（重试耗尽后）。
+
+`ask_stream(user_input)` 签名与参数同上（流式逐块产出）。
 
 #### `get_messages() → list`
 
@@ -270,7 +329,9 @@
 | 路由 | 方法 | 说明 |
 |------|------|------|
 | `/` | GET | 返回内联 HTML 聊天页面（CHAT_HTML） |
-| `/api/chat` | POST | SSE 流式聊天接口（generate() 生成器） |
+| `/api/chat` | POST | SSE 流式聊天接口（generate() 生成器）；请求体 `{"message": str, "images": [dataURL]}`，`images` 为可选图片列表（仅识图模型接受，见下） |
+| `/api/source` | GET | 读取当前来源/模型及可选列表（填充顶部下拉框） |
+| `/api/source` | POST | 运行中一键切换来源/模型（`{source, model}`） |
 | `/api/reset` | POST | 重置对话会话 |
 | `/api/history` | GET | 列出所有历史对话 |
 | `/api/history/<filename>` | GET | 加载指定历史对话 |
@@ -304,3 +365,10 @@
 | `cancelled` | 用户停止生成，流结束（半截回复不保存） |
 | `error` | 错误信息 |
 | `[DONE]` | 流式响应结束标记 |
+
+### 图片输入（识图）
+
+- 识图模型清单见 `config.SOURCES` 各来源的 `vision_models`（当前：DeepSeek 官方 `deepseek-flash`、opencode GO `deepseek-v4.1-flash`、智谱 BigModel `glm-5.3-flash`、百炼 Token Plan `qwen3.8-flash` / `qwen3.8-max`、阶跃 Step 5 `step-5-preview`、小米 MiMo `mimo-v2.6-flash` / `mimo-v2.6-pro`）
+- 请求 `/api/chat` 时可带 `images` 字段：`data:image/png;base64,...` 形式的 base64 data URL 列表（PNG/JPG/WebP/GIF，每条消息 ≤4 张、单张解码后 ≤5MB）
+- 前端在输入框旁显示 🖼️ 按钮，也支持直接粘贴截图；切换到不支持识图的模型时入口自动隐藏
+- 非识图模型收到多模态消息时，`ChatSession` 会把图片压平为「[图片 xN]」占位符再发送，避免网关 400；历史记录中的图片同样只保留占位符，不落盘 base64

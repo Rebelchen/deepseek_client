@@ -16,13 +16,15 @@
 
 ### 智能对话
 - **流式输出**：逐 token 实时显示，打字机效果
+- **多对话并行**：点右上角「新窗口」在同一进程内再开一个独立对话窗口，各自一份上下文、各自一条流，可以同时在生成（会话按「槽 slot」隔离，最多 `MAX_WINDOWS` 个窗口），不用再 `--port` 多开进程
 - **可中断生成**：回答过长时点击「停止」，立即节省 token，半截回复不落盘
-- **深度思考展示**：支持 `deepseek-reasoner` / `deepseek-v4-flash` 的思考过程折叠面板
+- **深度思考展示**：支持 `deepseek-flash` / `deepseek-v4.1-flash` / `deepseek-v4-flash` / `deepseek-v4-pro` / `glm-5.3-flash` 的思考过程折叠面板
 - **自动重试**：仅对服务器/网络错误（500/502/503/504/429）指数退避重试
-- **联网搜索**：AI 可自动联网获取最新信息（需在 DeepSeek 平台开通搜索权限）
+- **图片识别**：支持给 AI 发送图片（🖼️ 按钮或直接粘贴截图），由识图模型分析；不支持识图的来源/模型会自动降级（图片转为占位符，不影响对话）
+- **联网搜索**：内置 `web_search` / `fetch_webpage` 工具（基于 Bing RSS，无需额外 API Key），任何 API 来源都可用；DeepSeek 官方来源还可叠加服务端搜索
 - **完成提示音**：回答结束后播放气泡音（Web Audio 合成，无需音频文件）
 
-### 本地文件操作（Function Calling）
+### 工具集（Function Calling）
 AI 在对话中可主动调用工具：
 
 | 工具 | 功能 | 说明 |
@@ -31,6 +33,8 @@ AI 在对话中可主动调用工具：
 | `write_file` | 保存文件 | **统一保存到「总结」目录**，自动创建子目录 |
 | `list_files` | 列出目录 | 文件与子目录按字母排序 |
 | `get_file_info` | 查看信息 | 类型、大小、修改时间 |
+| `web_search` | 联网搜索 | Bing 结果（标题/链接/摘要），用于时效性问题与事实核实 |
+| `fetch_webpage` | 抓取网页 | 提取网页正文，搜索结果摘要不够时读取完整内容 |
 
 点击右上角「总结」按钮可直接在资源管理器中打开文件保存目录。
 
@@ -64,6 +68,11 @@ AI 在对话中可主动调用工具：
 ### 1. 安装依赖
 
 ```bash
+# 创建并激活虚拟环境（推荐，密钥配置在虚拟环境中）
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1    # PowerShell
+# 或 .\.venv\Scripts\activate   # CMD
+
 pip install -r requirements.txt
 # 或安装为可执行命令：
 pip install -e .
@@ -71,40 +80,77 @@ pip install -e .
 
 ### 2. 配置 API Key
 
-密钥通过**环境变量**或项目根目录的 **`.env`** 提供，代码中不保存任何密钥：
+支持六个 API 来源。**密钥只通过环境变量注入（推荐写入虚拟环境激活脚本），代码不读取任何 `.env` 文件，仓库中不保存真实密钥。**
 
-```bash
-# 方式一：环境变量（PowerShell）
-$env:DEEPSEEK_API_KEY = "sk-你的密钥"
+| 来源 | 说明 | 密钥变量 |
+|------|------|----------|
+| **opencode GO**（默认） | 低价订阅套餐，端点 `https://opencode.ai/zen/go/v1`，模型 `deepseek-v4-flash` / `deepseek-v4.1-flash`（支持识图）/ `deepseek-v4-pro` | `OPENCODE_GO_API_KEY` |
+| **DeepSeek 官方 API** | 官方平台，模型 `deepseek-flash`（DeepSeek-V4.1-Flash，支持识图）/ `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
+| **智谱 BigModel** | OpenAI 兼容平台，端点 `https://open.bigmodel.cn/api/paas/v4`，模型 `glm-5.3-flash` | `ZBIGMODEL_API_KEY` |
+| **百炼 Token Plan** | 阿里云百炼 Token Plan 订阅，端点 `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，模型 `qwen3.8-flash` / `qwen3.8-max`（均支持识图） | `BAILIAN_TOKEN_PLAN_API_KEY` |
+| **阶跃 Step 5** | 阶跃星辰开放平台（按量计费），端点 `https://api.stepfun.com/v1`，模型 `step-5-preview`（1M 上下文、支持识图、`reasoning_effort` 三档） | `STEPFUN_API_KEY` |
+| **小米 MiMo** | 小米 MiMo 开放平台（按量计费），端点 `https://api.xiaomimimo.com/v1`，模型 `mimo-v2.6-flash` / `mimo-v2.6-pro`（1M 上下文、支持识图、思考默认开启） | `XIAOMI_MIMO_API_KEY` |
 
-# 方式二：.env 文件（推荐，已在 .gitignore 中排除）
-copy .env.example .env
-# 然后编辑 .env，填入真实密钥
+**推荐方式：写入虚拟环境激活脚本**（每次 activate 自动注入）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_venv_keys.ps1
+# 按提示输入各密钥（可回车沿用用户级已存值），随后激活 venv 即自动生效
 ```
 
-> 密钥从 [platform.deepseek.com](https://platform.deepseek.com) 获取。
+**临时方式：当前会话临时设置**（不持久化，适合临时测试）：
+
+```powershell
+$env:OPENCODE_GO_API_KEY = "oc-你的密钥"
+```
+
+> 密钥获取：
+> - opencode GO：[opencode.ai/auth](https://opencode.ai/auth) 订阅 Go 后在控制台复制
+> - DeepSeek 官方：[platform.deepseek.com](https://platform.deepseek.com)
+> - 智谱 BigModel：[open.bigmodel.cn](https://open.bigmodel.cn) 控制台「API Keys」页创建
+> - 百炼 Token Plan：阿里云百炼控制台订阅 Token Plan 后获取**套餐专用** Key（`sk-sp-` 开头）。
+>   该 Key 只能配 Token Plan 专属端点使用，换通用 DashScope 地址会改按量计费，跨区域端点会 401
+> - 阶跃星辰：[platform.stepfun.com](https://platform.stepfun.com) 控制台「API Keys」页创建，
+>   为无 `sk-` 前缀的长随机串。该 Key 走按量端点 `https://api.stepfun.com/v1`；
+>   打 Step Plan 订阅通道 `/step_plan/v1` 会返回 400 `you have no active step plan subscription`
+> - 小米 MiMo：[platform.xiaomimimo.com](https://platform.xiaomimimo.com) 创建（`sk-` 开头）。
+>   按量端点为 `https://api.xiaomimimo.com/v1`，`api-key` 与 `Authorization: Bearer` 两种请求头
+>   都接受；套餐通道 `token-plan-cn/sgp/ams.xiaomimimo.com` 不认按量 Key（实测 401 `invalid_key`）
 
 ### 3. 启动
 
 ```bash
-python main.py                 # 默认端口 5000
-python main.py --port 5001     # 多开实例时指定端口
+python main.py                 # 默认端口 5000（先在激活的 venv 中运行）
+python main.py --port 5001     # 需要再起一个独立进程时指定端口（日常并行请直接用界面「新窗口」）
 deepseek-client                # 使用 pip install -e . 安装后可直接运行
 ```
 
 ### Windows 一键启动
 
-- 双击项目根目录的 **`启动.bat`**（用 `pythonw` 静默启动，无控制台窗口）
-- 或创建桌面快捷方式指向 `pythonw.exe main.py`
+- 双击项目根目录的 **`启动.bat`**：自动激活 `.venv`（注入密钥）并用 `pythonw` 静默启动，无控制台窗口
+- 或先激活 venv 再运行 `python main.py`
 
 ---
 
 ## 📖 使用指南
 
 ### 基础对话
-1. 底部输入框输入消息，`Enter` 发送，`Shift+Enter` 换行
+1. 底部输入框输入消息，`Enter` 发送；`Shift+Enter` / `Ctrl+Enter` / `Alt+Enter` 均可换行
 2. AI 回复流式显示；推理模型的思考过程默认折叠，可点击展开
 3. 回答过长可随时点击「停止」中断
+4. **多个对话同时进行**：点右上角「新窗口」再开一个独立会话（同进程、同服务），各窗口可分别选来源/模型、各自记住上次选择；一条在长回答时，另一条照常可问
+5. **页面缩放**：按住 `Ctrl` + 滚轮缩放界面（50%~200%，与网页缩放效果一致），也可用 `Ctrl+=` / `Ctrl+-` / `Ctrl+0`（放大/缩小/复位）；比例自动记住，重启后保持
+
+### 图片识别
+- 使用识图模型时，输入框左侧出现 🖼️ 按钮：可点选图片（PNG/JPG/WebP/GIF，最多 4 张、单张 ≤5MB），也可以直接在输入框粘贴截图
+  - **DeepSeek 官方 API**：`deepseek-flash`（`deepseek-v4-pro` 不支持）
+  - **opencode GO**：`deepseek-v4.1-flash`（`deepseek-v4-flash` / `deepseek-v4-pro` 不支持）
+  - **智谱 BigModel**：`glm-5.3-flash`
+  - **百炼 Token Plan**：`qwen3.8-flash` / `qwen3.8-max`（该网关要求图片宽高大于 10px）
+  - **阶跃 Step 5**：`step-5-preview`（官方另支持视频输入，客户端暂未接入）
+  - **小米 MiMo**：`mimo-v2.6-flash` / `mimo-v2.6-pro`（官方另支持音频/视频输入，客户端暂未接入）
+- 发送后图片随消息显示，AI 会分析图片内容（识图、翻译、OCR 等）
+- 切换到**不支持识图**的模型（如 opencode GO 的 `deepseek-v4-flash`，或官方/GO 的 `deepseek-v4-pro`）时，图片入口自动隐藏；历史会话中的图片会以「[图片 xN]」占位符保留，不会内嵌 base64
 
 ### 历史记录
 - 点击左上角 ☰ 打开历史侧栏
@@ -125,14 +171,19 @@ deepseek-client                # 使用 pip install -e . 安装后可直接运�
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `MODEL` | 模型名称 | `deepseek-v4-flash` |
+| `SOURCE` | 默认 API 来源：`opencode_go` / `official` / `zbigmodel` / `bailian_token_plan` / `stepfun` / `xiaomi_mimo` | `opencode_go` |
+| `MODEL` | 默认模型（按 `SOURCE` 自动解析） | `deepseek-v4-flash` |
 | `SHOW_REASONING` | 是否展示思考过程 | `True` |
-| `REASONING_EFFORT` | 推理强度（low/medium/high） | `medium` |
-| `ENABLE_SEARCH` | 联网搜索 | `True` |
+| `REASONING_EFFORT` | 推理强度（官方 `low`/`high`/`max`，阶跃 `low`/`medium`/`high`；仅这两个来源下发） | `high` |
+| `ENABLE_SEARCH` | 联网工具总开关（`web_search` / `fetch_webpage`） | `True` |
 | `TEMPERATURE` | 温度 (0-2) | `0.7` |
 | `MAX_TOKENS` | 单次回答最大 token | `40960` |
 | `API_TIMEOUT` | 请求超时（秒） | `60` |
 | `API_MAX_RETRIES` | 最大重试次数 | `3` |
+| `MAX_WINDOWS` | 单进程内最多同时打开的会话窗口数（「新窗口」按钮的上限） | `4` |
+
+> **一键换源**：运行中点击窗口顶部「来源」/「模型」下拉框即可即时切换（官方 API ⇄ opencode GO ⇄ 智谱 BigModel ⇄ 百炼 Token Plan ⇄ 阶跃 Step 5 ⇄ 小米 MiMo），无需重启。
+> `SOURCE` 只决定启动时的默认值。
 
 完整参数见 [docs/API.md](docs/API.md)。
 
@@ -151,7 +202,8 @@ deepseek_client/
 │
 ├── core/                  # 核心逻辑层（不依赖任何 UI 代码）
 │   ├── chat.py            # DeepSeek 会话管理：流式/工具循环/重试/取消
-│   ├── tools.py           # Function Calling 文件工具集
+│   ├── tools.py           # Function Calling 工具集（文件 + 联网）
+│   ├── search.py          # 联网搜索与网页抓取（Bing RSS，纯标准库）
 │   ├── history.py         # 历史记录保存/加载/解析（HTML+TXT）
 │   ├── html_renderer.py   # Markdown→HTML 渲染引擎（Pygments+KaTeX，多层容错）
 │   └── prompts.py         # 系统提示词构建
@@ -201,8 +253,8 @@ pyinstaller --onefile --windowed --name "DeepSeek问答" --icon icon.ico main.py
 
 - **端口被占用？** 程序会自动挑选空闲端口，无需手动处理。
 - **公式显示异常？** 已内置多层容错（单行/多行公式、双反斜杠、下划线保护），如仍异常请提交 Issue 并附上原始回答。
-- **离线还能用吗？** 历史记录渲染完全离线；联网仅用于 DeepSeek API 调用。
-- **密钥安全吗？** API Key 只存于环境变量 / 本地 `.env`，不会进入 Git 历史。如曾泄露，请立即在 DeepSeek 平台吊销并更换。
+- **离线还能用吗？** 历史记录渲染完全离线；DeepSeek API 与联网搜索需要网络。
+- **密钥安全吗？** 密钥只通过环境变量注入（推荐写入虚拟环境激活脚本，见 `scripts/setup_venv_keys.ps1`），代码不读取 `.env`，仓库中不保存任何真实密钥。如曾泄露，请立即在对应平台吊销并更换。
 
 ---
 

@@ -14,10 +14,11 @@ import json
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime
 from openai import OpenAI
 from config import (
-    API_KEY, BASE_URL, MODEL, API_TIMEOUT, API_MAX_RETRIES,
+    SOURCE, MODEL, SOURCES, API_TIMEOUT, API_MAX_RETRIES,
     TEMPERATURE, TOP_P, MAX_TOKENS, PRESENCE_PENALTY,
     FREQUENCY_PENALTY, STOP, REASONING_EFFORT, ENABLE_SEARCH, SHOW_REASONING,
 )
@@ -56,22 +57,69 @@ class ChatSession:
             on_tool_call: callable(name, args) -> None
                           UI 回调，每次工具调用时触发（用于显示进度）
         """
-        self.client = OpenAI(
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            timeout=API_TIMEOUT,
-            max_retries=API_MAX_RETRIES,
-        )
         self.tools = tools
         self.tool_executor = tool_executor
         self.on_tool_call = on_tool_call
         self.messages = [{"role": "system", "content": system_prompt}]
         # 取消标记：UI 点击"停止"后置位，流式生成在下一个 chunk 处退出
         self._cancel_event = threading.Event()
+        # 网关会话标识：每个对话一个稳定 uuid（部分网关要求会话头用于路由，
+        # 见 config.SOURCES 的 session_header；新对话由新建 ChatSession 换新 id）
+        self._session_id = uuid.uuid4().hex
+        # 来源/模型：默认取 config，界面切换时通过 configure() 即时更新
+        self.source = SOURCE
+        self.model = MODEL
+        self.client = None
+        self.configure(source=SOURCE, model=MODEL)
+
+    def configure(self, source: str = None, model: str = None):
+        """切换 API 来源与模型（运行中即时生效，无需重启）。
+
+        Args:
+            source: SOURCES 的键（official / opencode_go / zbigmodel /
+                    bailian_token_plan / stepfun / xiaomi_mimo）；None 表示保持当前
+            model:  该来源 models 列表中的模型名；None 表示保持当前
+
+        Raises:
+            ValueError: 来源不存在 / 模型不属于该来源 / 缺少对应 API Key
+        """
+        source = source or self.source
+        model = model or self.model
+        info = SOURCES.get(source)
+        if info is None:
+            raise ValueError(f"未知来源: {source}")
+        if model not in info["models"]:
+            raise ValueError(
+                f"来源「{info['label']}」不提供模型 {model}，可选: {', '.join(info['models'])}"
+            )
+        if not info["api_key"]:
+            raise ValueError(
+                f"未配置 {info['env_key']}（来源「{info['label']}」需要）。"
+                f"请将其设置为环境变量（推荐配置在虚拟环境激活脚本，见 scripts/setup_venv_keys.ps1）。"
+            )
+        self.source = source
+        self.model = model
+        # 重建客户端（base_url / api_key 随来源变化）；
+        # 来源要求会话头时携带稳定 uuid（如 opencode GO 的 x-opencode-session）
+        session_header = info.get("session_header")
+        self.client = OpenAI(
+            api_key=info["api_key"],
+            base_url=info["base_url"],
+            timeout=API_TIMEOUT,
+            max_retries=API_MAX_RETRIES,
+            default_headers={session_header: self._session_id} if session_header else None,
+        )
+        return self
 
     @staticmethod
     def _is_server_error(e: Exception) -> bool:
-        """判断异常是否为服务器端错误（应自动重试）。"""
+        """判断异常是否为瞬时错误（应自动重试）。
+
+        除 HTTP 5xx/429 外，也包含连接类瞬时故障：openai SDK 的
+        APIConnectionError 消息为 "Connection error"（长对话工具循环中
+        复用被网关关闭的 keep-alive 连接、网络抖动时最常见），可经退避
+        重试恢复。
+        """
         msg = str(e).lower()
         triggers = [
             "500",               # HTTP 500 Internal Server Error
@@ -82,6 +130,8 @@ class ChatSession:
             "connectionreset",   # 远程主机强制关闭连接
             "connection refused",
             "connection reset",
+            "connection error",  # openai APIConnectionError（连接建立/复用失败）
+            "timed out",
             "timeout",
             "too many",
             "reqwest",           # Rust HTTP 客户端错误
@@ -128,19 +178,108 @@ class ChatSession:
     def _reset_cancel(self) -> None:
         self._cancel_event.clear()
 
+    @property
+    def supports_vision(self) -> bool:
+        """当前来源+模型是否支持图片输入（识图）。
+
+        识图模型清单见 config.SOURCES 各来源的 vision_models。
+        不支持时，发送前会把历史消息中的图片压平为文本占位符。
+        """
+        info = SOURCES.get(self.source, {})
+        return self.model in info.get("vision_models", ())
+
+    @staticmethod
+    def _content_to_text(content) -> str:
+        """把多模态 content（text / image_url 混合列表）压平为纯文本。
+
+        图片转成 "[图片 xN]" 占位符：历史记录不落 base64 大图；
+        不支持识图的模型也能带着占位符继续理解上下文，不会报 400。
+        """
+        if isinstance(content, str):
+            return content
+        texts, n_imgs = [], 0
+        for part in content:
+            if isinstance(part, str):
+                texts.append(part)
+            elif isinstance(part, dict):
+                if part.get("type") == "text" and part.get("text"):
+                    texts.append(str(part["text"]))
+                elif part.get("type") == "image_url":
+                    n_imgs += 1
+        if n_imgs:
+            texts.append(f"[图片 x{n_imgs}]")
+        return "\n".join(texts)
+
+    def _outgoing_messages(self) -> list:
+        """构造发给 API 的消息（每次请求前清理，防御严格网关校验）。
+
+        - 只保留协议允许的字段（剔除 timestamp 等多余键）
+        - 修复"悬空"的 assistant(tool_calls)：若其后没有对应的 tool 消息
+          （异常/中断可能残留），移除其 tool_calls，仅保留文本；
+          若因此内容为空则整条丢弃——否则 OpenAI 兼容网关（如 opencode GO）
+          会以 "assistant message with tool_calls must be followed by tool
+          messages" 拒绝请求
+        """
+        clean = []
+        for m in self.messages:
+            e = {}
+            if m.get("role") in ("system", "user", "assistant", "tool"):
+                e["role"] = m["role"]
+            if m.get("content") is not None:
+                e["content"] = m["content"]
+            if m.get("tool_calls"):
+                e["tool_calls"] = m["tool_calls"]
+            if m.get("tool_call_id"):
+                e["tool_call_id"] = m["tool_call_id"]
+            if m.get("reasoning_content"):
+                e["reasoning_content"] = m["reasoning_content"]
+            if e.get("role"):
+                clean.append(e)
+
+        result = []
+        for i, m in enumerate(clean):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                ids = {tc.get("id") for tc in m["tool_calls"]}
+                # 紧随其后的应全是 tool 消息，且覆盖所有 tool_call_id
+                j = i + 1
+                covered = set()
+                while j < len(clean) and clean[j].get("role") == "tool":
+                    cid = clean[j].get("tool_call_id")
+                    if cid in ids:
+                        covered.add(cid)
+                    j += 1
+                if covered != ids:
+                    m = {k: v for k, v in m.items() if k != "tool_calls"}
+                    if not m.get("content"):
+                        continue  # 悬空且无文本，整条丢弃
+            result.append(m)
+
+        # 不支持识图的来源：多模态 content 压平为纯文本（图片转占位符），
+        # 避免网关对 image_url 内容报 400；识图模型保持原生列表格式
+        if not self.supports_vision:
+            for m in result:
+                if isinstance(m.get("content"), list):
+                    m["content"] = self._content_to_text(m["content"])
+        return result
+
     def _build_kwargs(self, stream: bool = False) -> dict:
         """构造 API 请求参数（ask / ask_stream 共用，保证两者行为一致）。"""
         # 关键点：
-        #  - 推理模型（deepseek-v4 等）不支持 temperature/top_p/presence_penalty，
-        #    传了会报 400，因此按模型分支构造
-        #  - 联网搜索是 DeepSeek 私有参数，只能通过 extra_body 传递
-        kwargs = dict(model=MODEL, messages=self.messages, stream=stream)
+        #  - 思考模式模型（官方 deepseek-flash / deepseek-v4-pro）不支持
+        #    temperature/presence_penalty/frequency_penalty，传了也不生效，
+        #    因此按来源配置的 reasoning_models 分支构造
+        #  - 本地 web_search / fetch_webpage 工具与来源无关（见 core/tools.py）
+        #  - DeepSeek 服务端自动搜索是私有参数，只能通过 extra_body 传递，
+        #    且仅官方来源支持（GO 网关不支持时自动跳过）
+        kwargs = dict(model=self.model, messages=self._outgoing_messages(), stream=stream)
+        source_info = SOURCES.get(self.source, {})
 
-        # 推理模型（deepseek-reasoner, deepseek-v4 等）不支持 temperature/top_p 等参数
-        _is_reasoner = any(x in MODEL.lower() for x in ("reasoner", "v4", "r1"))
+        # 思考模式模型：不传采样参数，用 reasoning_effort 调节思考强度
+        _is_reasoner = self.model in source_info.get("reasoning_models", ())
         if _is_reasoner:
             kwargs["max_tokens"] = MAX_TOKENS
-            if REASONING_EFFORT:
+            # reasoning_effort 仅部分来源支持（GO 网关为 OpenAI 兼容端点，传了可能报错）
+            if REASONING_EFFORT and source_info.get("supports_reasoning_effort"):
                 kwargs["reasoning_effort"] = REASONING_EFFORT
         else:
             kwargs.update(
@@ -158,12 +297,13 @@ class ChatSession:
         if self.tools:
             kwargs["tools"] = self.tools
             kwargs["tool_choice"] = "auto"
-        if ENABLE_SEARCH:
-            # 联网搜索：DeepSeek 通过 extra_body 传递非标准参数
+        if ENABLE_SEARCH and source_info.get("supports_search"):
+            # DeepSeek 服务端自动搜索：通过 extra_body 传递非标准参数
+            # （与本地 Function Calling 的 web_search 工具互为补充）
             kwargs["extra_body"] = {"enable_search": True}
         return kwargs
 
-    def ask(self, user_input: str) -> str:
+    def ask(self, user_input: str | list) -> str:
         """
         发送一条用户消息，返回 AI 的文本回复。
 
@@ -171,7 +311,8 @@ class ChatSession:
         AI 请求调用工具 → 执行工具 → 结果喂回 AI → 返回最终回答
 
         Args:
-            user_input: 用户输入文本
+            user_input: 用户输入文本；或 OpenAI vision 多模态 content 列表
+                        （[{"type": "text", ...}, {"type": "image_url", ...}]，含图片时）
 
         Returns:
             AI 回答文本，或错误提示
@@ -185,7 +326,17 @@ class ChatSession:
             try:
                 kwargs = self._build_kwargs(stream=False)
                 resp = self.client.chat.completions.create(**kwargs)
+                # 空响应（无 choices，网关偶发）不报错，按无内容处理
+                if not resp.choices:
+                    return ""
                 msg = resp.choices[0].message
+
+                # 思考模式返回的思维链（reasoning_content）。官方指南要求：
+                # 请求携带 tools 时，历史轮次的思维链必须完整回传，否则 API 返回 400。
+                # OpenAI SDK 未定义该字段，用 getattr + model_extra 兜底。
+                reasoning = getattr(msg, "reasoning_content", None)
+                if reasoning is None and getattr(msg, "model_extra", None):
+                    reasoning = msg.model_extra.get("reasoning_content")
 
                 # ---------- 情况 1：AI 请求调用工具 ----------
                 if msg.tool_calls:
@@ -205,6 +356,8 @@ class ChatSession:
                             for tc in msg.tool_calls
                         ],
                     }
+                    if reasoning:
+                        assistant_msg["reasoning_content"] = reasoning
                     self.messages.append(assistant_msg)
 
                     # 逐个执行工具
@@ -234,7 +387,10 @@ class ChatSession:
 
                 # ---------- 情况 2：普通文本回复 ----------
                 reply = msg.content or ""
-                self.messages.append({"role": "assistant", "content": reply, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                reply_msg = {"role": "assistant", "content": reply, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                if reasoning:
+                    reply_msg["reasoning_content"] = reasoning
+                self.messages.append(reply_msg)
                 return reply
 
             except Exception as e:
@@ -257,14 +413,15 @@ class ChatSession:
                 )
                 time.sleep(wait)
 
-    def ask_stream(self, user_input: str):
+    def ask_stream(self, user_input: str | list):
         """发送消息，以生成器方式逐块产出 AI 回复文本。
 
         支持流式输出：每收到一个 token 就 yield 出去，前端可实时显示。
         工具调用（Function Calling）在内部自动处理，不中断文本流。
 
         Args:
-            user_input: 用户输入文本
+            user_input: 用户输入文本，或 vision 多模态 content 列表（含图片时，
+                        仅识图模型接受，见 supports_vision）
 
         Yields:
             str: 回复文本片段，前端逐个拼接即可得到完整回复
@@ -294,6 +451,9 @@ class ChatSession:
                         yield "\x00CANCEL\x00"
                         return
 
+                    # 忽略无 choices 的 chunk（OpenAI 兼容网关会发送 usage/结束等空块）
+                    if not chunk.choices:
+                        continue
                     delta = chunk.choices[0].delta
 
                     # DeepSeek 思考过程（reasoning_content）
@@ -318,7 +478,10 @@ class ChatSession:
                         for tc in delta.tool_calls:
                             idx = tc.index
                             if idx not in tool_calls_buffer:
-                                tool_calls_buffer[idx] = {"name": "", "arguments": ""}
+                                tool_calls_buffer[idx] = {"name": "", "arguments": "", "id": None}
+                            # 优先使用网关下发的真实 tool_call_id（严格网关要求 id 匹配）
+                            if getattr(tc, "id", None) and not tool_calls_buffer[idx]["id"]:
+                                tool_calls_buffer[idx]["id"] = tc.id
                             if tc.function and tc.function.name:
                                 tool_calls_buffer[idx]["name"] += tc.function.name
                             if tc.function and tc.function.arguments:
@@ -335,7 +498,7 @@ class ChatSession:
                     tool_calls_list = []
                     for idx, tc_data in tool_calls_buffer.items():
                         tool_calls_list.append({
-                            "id": f"call_{idx}",
+                            "id": tc_data["id"] or f"call_{idx}",
                             "type": "function",
                             "function": {
                                 "name": tc_data["name"],
@@ -367,7 +530,7 @@ class ChatSession:
                         result = self.tool_executor(name, args) if self.tool_executor else "未注册工具执行器"
                         self.messages.append({
                             "role": "tool",
-                            "tool_call_id": f"call_{idx}",
+                            "tool_call_id": tc_data["id"] or f"call_{idx}",
                             "content": str(result),
                         })
 
@@ -415,12 +578,18 @@ class ChatSession:
         """
         获取对话历史（仅 user/assistant 消息）。
 
-        用于保存聊天记录时使用，过滤掉 system 和 tool 消息。
+        用于保存聊天记录时使用，过滤掉 system 和 tool 消息，
+        并移除 tool_calls 字段（工具调用过程不落盘）。
         """
         result = []
         for m in self.messages:
             if m["role"] in ("user", "assistant") and m.get("content"):
-                result.append(m)
+                entry = dict(m)
+                entry.pop("tool_calls", None)
+                # 多模态消息（含图片）压平为文本占位符：历史文件不内嵌 base64 大图
+                if isinstance(entry.get("content"), list):
+                    entry["content"] = self._content_to_text(entry["content"])
+                result.append(entry)
         return result
 
     def reset(self, system_prompt: str = "你是一个有用的助手。"):

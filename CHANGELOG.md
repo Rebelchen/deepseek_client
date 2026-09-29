@@ -3,6 +3,52 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)
 与 [语义化版本](https://semver.org/lang/zh-CN/)。版本号单一事实来源为 `pyproject.toml`。
 
+## [Unreleased]
+
+### 新增
+- 多对话并行：会话改为按「槽（slot）」隔离，点右上角「新窗口」在**同一进程**内再开一个独立对话窗口（各自一份上下文、各自一条流、可同时在生成），不必再 `python main.py --port 5001` 多开进程；上限 `config.MAX_WINDOWS = 4`（每窗口一路 SSE 长连接，WebView2 对同一 host 的并发连接约 6）
+- 所有 `/api/*` 按 slot 定位会话（GET 用 `?slot=`，POST 用请求体 `slot`；缺省 `main` 即改造前的唯一会话，老行为不变）；新增 `/api/new-window`，新窗口沿用发起方的来源/模型但不共用上下文，槽编号只增不复用
+- `ui_state.json` 的来源/模型改为按槽分键（`slots.{槽id}.source/model`），各窗口记住自己的来源；原扁平记录视为主槽记录继续兼容读取，`pageZoom` 仍全局共享
+- 同一个窗口内再次发起生成会被拒（409）并提示先停止或等待结束——防止两条流并发写坏同一份上下文
+- 新增小米 MiMo 来源（`https://api.xiaomimimo.com/v1`，OpenAI 兼容端点），模型 `mimo-v2.6-flash` / `mimo-v2.6-pro`（1M 上下文、最大输出 128k、思考链展示、支持识图）；密钥通过环境变量 `XIAOMI_MIMO_API_KEY` 提供。实测该 Key 只认按量端点，打 `token-plan-cn.xiaomimimo.com` 返回 401 `invalid_key`；思考默认开启且该端点会忽略采样参数（`temperature` / `top_p` 被强制回默认值），又无 `reasoning_effort` 档位（只有 `thinking.type` 开/关），故本来源 `supports_reasoning_effort=False`
+- 新增阶跃星辰 StepFun 来源（`https://api.stepfun.com/v1`，OpenAI 兼容端点），模型 `step-5-preview`（Step 5 Preview：1M 上下文、最大输出 64k、思考链展示、支持识图）；密钥通过环境变量 `STEPFUN_API_KEY` 提供。实测该 Key 走按量端点可用，打 Step Plan 订阅通道 `/step_plan/v1` 返回 400 `you have no active step plan subscription`；`reasoning_effort` 三档 `low`/`medium`/`high` 生效（思考长度随档位递增），故本来源 `supports_reasoning_effort=True`
+- opencode GO 新增模型 `deepseek-v4.1-flash`（网关 2026-09-10 上架，支持图片输入，价格与 `deepseek-v4-flash` 相同）
+- 多 API 来源支持：新增 opencode GO 套餐来源（`https://opencode.ai/zen/go/v1`），模型 `deepseek-v4-flash` / `deepseek-v4-pro`
+- 新增智谱 BigModel 来源（`https://open.bigmodel.cn/api/paas/v4`，OpenAI 兼容端点），模型 `glm-5.3-flash`；密钥通过环境变量 `ZBIGMODEL_API_KEY` 提供
+- 新增阿里云百炼 Token Plan 来源（`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，OpenAI 兼容端点），模型 `qwen3.8-flash` / `qwen3.8-max`（均默认开启思考、支持识图）；密钥通过环境变量 `BAILIAN_TOKEN_PLAN_API_KEY` 提供。Token Plan 的 `sk-sp-` Key 必须走套餐专属端点，跨区域端点返回 401
+- 图片识别：`glm-5.3-flash` 支持发送图片（🖼️ 按钮选图 / 输入框直接粘贴截图，PNG/JPG/WebP/GIF，最多 4 张、单张 ≤5MB）；不支持识图的来源/模型自动降级——图片转为「[图片 xN]」占位符继续对话，历史记录不落盘 base64
+- 页面缩放：`Ctrl+滚轮` / `Ctrl+=` / `Ctrl+-` / `Ctrl+0` 整页等比缩放（50%~200%，效果与浏览器网页缩放一致），比例持久化到本地 `ui_state.json`（跨端口/重启稳定），无记录时默认 100%
+- 输入框换行：`Shift+Enter` / `Ctrl+Enter` / `Alt+Enter` 均可换行（仅裸 `Enter` 发送）；输入法候选确认的 Enter 不再误发送
+- 一键换源：窗口顶部「来源 / 模型」下拉框，运行中即时切换（官方 API ⇄ opencode GO ⇄ 智谱 BigModel），无需重启；自动记住上次使用的来源/模型，下次启动恢复（记录失效或密钥缺失时回退默认）
+- 新增 `OPENCODE_GO_API_KEY`、`SOURCE` 配置项（环境变量），`SOURCE` 决定启动时的默认来源
+- 新增 `scripts/setup_venv_keys.ps1`：一键把密钥写入虚拟环境激活脚本，`启动.bat` 启动时自动激活 venv 并注入
+- 新增本地 Function Calling 联网工具 `web_search`（Bing RSS 搜索）与 `fetch_webpage`（网页正文提取），无需额外 API Key，任何来源都能联网
+- 系统提示词改为指导 AI 主动调用联网工具查证时效性问题（不再声称“没有联网能力”）
+
+### 安全
+- 移除 `.env` 文件读取：密钥只允许通过环境变量注入，代码不读取任何 `.env`，仓库中不保存真实密钥
+- 删除项目根目录的真实密钥文件 `.env`，密钥迁移至虚拟环境激活脚本
+- 密钥缺失时弹窗提示（`pythonw` 静默启动也能看到错误）
+
+### 变更
+- 默认来源改为 `opencode_go`（DeepSeek 官方 API 涨价后成本更低）
+- 对齐 DeepSeek 官网最新模型：官方来源模型改为 `deepseek-flash`（DeepSeek-V4.1-Flash，思考模式默认开启）与 `deepseek-v4-pro`，移除已下线的旧模型名 `deepseek-v4-flash` / `deepseek-chat` / `deepseek-reasoner`
+- 识图能力扩充：官方 `deepseek-flash`、opencode GO `deepseek-v4.1-flash` 支持图片输入（官方/GO 的 `deepseek-v4-pro` 与 GO 的 `deepseek-v4-flash` 不支持），图片入口的灰色提示同步更新
+- 思考模型改由 `SOURCES[*].reasoning_models` 显式声明（替代模型名子串匹配，避免 `glm-5.3-flash` 被误判为思考模型），`REASONING_EFFORT` 取值对齐官网 `low` / `high` / `max`，默认 `high`
+- `ChatSession` 新增 `configure(source, model)`，按来源区分能力开关（联网搜索 / `reasoning_effort` 仅官方来源生效）
+- 系统提示词随来源自动刷新（GO 来源不再提示联网搜索能力）
+
+### 修复
+- 修复「停止」的后端取消请求被排队：旧版 `/api/chat` 在整个流式期间持有全局会话锁，`/api/cancel` 拿不到锁只能等回答结束（实际只靠前端 fetch abort 兜底）。现改为每槽 `busy` 标记独占生成权 + 短时持锁，取消立即返回（本机实测 0.016s）
+- 修复多开窗口会互相污染的问题：上下文、来源/模型、取消标记、历史落盘文件现在全部按会话槽独立
+- 修复思考模式 + 工具调用时非流式 `ask()` 未回传历史轮次 `reasoning_content` 的问题：官方「思考模式」指南要求携带 `tools` 的请求必须完整回传，否则 API 返回 400
+- 连接类瞬时错误（`Connection error`，网络抖动/网关 keep-alive 连接失效）纳入指数退避重试：此前被当作客户端错误直接放弃，长对话工具循环中一次抖动即整轮失败
+- 修复点击 AI 回复/历史记录中的外部链接在应用窗口内导航的问题：外链统一改用系统默认浏览器打开（`/api/open-external`，仅允许 http/https），并开启 pywebview `OPEN_EXTERNAL_LINKS_IN_BROWSER`；窗口意外离开应用页面时自动拉回（此前链接目标网络不通时，整个界面会被浏览器错误页顶掉，只能重启）
+- 修复 opencode GO 网关新增校验后所有请求报 400 `MissingSessionID` 的问题：来源配置新增 `session_header`，ChatSession 为每个对话生成稳定 uuid 并以 `x-opencode-session` 请求头携带（新对话自动换新 id）
+- 修复 OpenAI 兼容网关（opencode GO）流式响应中带 `choices` 为空的数据块（usage/结束块）时抛 `list index out of range` 的问题，现自动跳过空块
+- 修复严格网关拒绝请求的问题（`assistant tool_calls 必须紧随 tool 消息`）：发送前自动修复会话中的悬空 tool_calls（异常中断残留），并剔除 timestamp 等非协议字段
+- 流式工具调用改用网关下发的真实 `tool_call_id`（不再本地编造），提高与严格 OpenAI 兼容网关的兼容性
+
 ## [1.4.0] - 2026-08-10
 
 ### 安全

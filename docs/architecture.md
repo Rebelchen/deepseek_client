@@ -20,8 +20,11 @@
 │                                                              │
 │  ┌──────────┐  ┌────────────┐  ┌──────────┐  ┌───────────┐  │
 │  │ chat.py  │  │ history.py │  │ tools.py │  │html_render│  │
-│  │ API 会话  │  │ 历史管理    │  │文件工具箱  │  │ + prompts │  │
+│  │ API 会话  │  │ 历史管理    │  │ 工具集   │  │ + prompts │  │
 │  └──────────┘  └────────────┘  └──────────┘  └───────────┘  │
+│        ┌───────────────────────────────────────────────────┐ │
+│        │ search.py：联网搜索 + 网页抓取（Bing RSS 纯标准库）    │ │
+│        └───────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │                    配置层 (config.py)                          │
 │           API 参数、路径、界面设置、版本号（密钥走环境变量）      │
@@ -35,7 +38,8 @@
 | UI 层 | `ui/webview_app.py` | Flask 路由 + 内联 HTML 页面 + SSE 流式接口 |
 | 核心层 | `core/chat.py` | DeepSeek API 会话管理、Function Calling 循环、自动重试 |
 | 核心层 | `core/history.py` | 对话记录的保存（HTML/TXT）、加载、解析 |
-| 核心层 | `core/tools.py` | 文件操作工具定义与执行（read/write/list/info） |
+| 核心层 | `core/tools.py` | 工具定义与执行（本地文件 read/write/list/info + 联网工具注册） |
+| 核心层 | `core/search.py` | 联网搜索与网页抓取实现（Bing RSS / HTML 正文提取） |
 | 核心层 | `core/html_renderer.py` | Markdown→HTML 渲染（Pygments 高亮 + KaTeX 公式） |
 | 核心层 | `core/prompts.py` | 系统提示词构建（含联网搜索与公式格式说明） |
 | 配置层 | `config.py` | 全局配置、版本号、路径管理 |
@@ -47,6 +51,9 @@
 系统只维护一套界面：pywebview（Edge WebView2）作为窗口容器，
 Flask 在后台线程提供 SSE 流式接口，UI 全部为内联 HTML/CSS/JS。
 界面层只做"胶水"对接，核心逻辑全部在 core/ 层。
+
+一个进程可以开多个窗口（见下文「会话槽」），它们共用同一个 Flask 服务，
+差别只在 URL 上的 `?slot=`。
 
 ### 2. 分层解耦
 
@@ -113,14 +120,42 @@ API_MAX_RETRIES = 3  # config.py 中配置
 「总结」目录（相对路径保留子目录、绝对路径只取文件名、`..` 越界被钳制），
 避免 AI 写文件时覆盖任意路径。
 
-### 8. 取消与自动保存（v1.3.0）
+### 8. 取消与自动保存（v1.3.0，按槽改造）
 
 - **取消生成**：前端"停止"按钮通过 AbortController 中断 SSE，同时调用 `/api/cancel`
-  置位 ChatSession 的取消标记；`ask_stream()` 在下一个 chunk 边界退出，
-  半截回复不写入会话、不落盘。
-- **自动保存**：每轮回答完成后调用 `_save_current_session()`，
-  同一会话内覆盖保存到首次生成的历史文件（`overwrite_conversation_html`），
-  历史目录不再堆积重复副本；窗口关闭时兜底保存。
+  （带 `slot`）置位该槽 ChatSession 的取消标记；`ask_stream()` 在下一个 chunk 边界退出，
+  半截回复不写入会话、不落盘。取消只影响自己那条流，别的窗口照常生成。
+- **自动保存**：每轮回答完成后调用 `_save_slot(slot)`，
+  同一会话内覆盖保存到该槽首次生成的历史文件（`overwrite_conversation_html`），
+  历史目录不再堆积重复副本；进程退出时 `_save_all_slots()` 兜底。
+
+### 9. 会话槽（slot）与多对话并行
+
+一个窗口 = 一个会话槽 = 一份独立上下文。`ui/webview_app.py` 里的 `Slot` 持有
+`ChatSession` + 私有锁 + 该会话的历史文件名；`SLOTS` 按槽 id 索引（`main` 是主槽，
+「新窗口」依次分配 `s2`、`s3`…，编号只增不复用，避免新窗口接上旧窗口的上下文）。
+
+```
+窗口 A (?slot=main)   ── /api/chat {slot:main} ──► Slot(main).session ─► API 流 ①
+窗口 B (?slot=s2)     ── /api/chat {slot:s2}   ──► Slot(s2).session   ─► API 流 ②   ①② 同时进行
+```
+
+- **core 层零改动**：`ChatSession` 的 `messages` / `_cancel_event` / `client` /
+  `_session_id` 本就是实例状态，多实例即天然并发。
+- **锁的用法**：`slot.lock` 只在"改结构"的瞬间持有（建会话、换源、抢占生成权），
+  绝不横跨整个流式期间；生成期间由 `slot.busy` 标记独占该槽。
+  这样既保证"一个槽同时只有一条回答"（上下文不会被两条流写坏，第二次请求返回 409），
+  又让 `/api/cancel` 能立刻拿到锁 —— 旧版全程持全局锁，取消请求会排队到回答结束。
+  `finally` 里归还生成权，客户端 abort / 异常 / 正常结束都会走到。
+- **前端注入**：`CHAT_HTML` 里统一包装 `window.fetch`，给所有 `/api/*` 带上本窗口的
+  `slot`（GET 走 query，POST 合并进 JSON body）。每窗口的 JS 上下文天然隔离，
+  所以并行不需要动流式渲染那套单流状态机。
+- **上限**：`config.MAX_WINDOWS = 4`。每个窗口一路 SSE 长连接，
+  WebView2 对同一 host 的并发连接约 6，要给换源/历史等普通请求留余量。
+- **限流提醒**：多窗口并发打同一个来源时，`_is_server_error` 会把 429 当瞬时错误
+  做指数退避重试，几路一起撞限流会互相放大（订阅制来源尤其注意），
+  各窗口分开选来源更稳。
+
 
 ## 数据流
 
@@ -136,8 +171,9 @@ API_MAX_RETRIES = 3  # config.py 中配置
     ├─ fetch POST /api/chat (SSE)
     │
     ▼
-Flask 路由: /api/chat
-    ├─ 调用 chat_session.ask_stream(user_input)
+Flask 路由: /api/chat (body: {message, images, slot})
+    ├─ get_slot(slot) 抢占生成权（slot.busy；该槽已有流在跑 → 409）
+    ├─ 调用 slot.session.ask_stream(user_input)
     │   ├─ 追加用户消息到 messages[]
     │   ├─ 调用 DeepSeek API (stream=True)
     │   ├─ yield 逐 token (SSE data: ...)
@@ -158,13 +194,15 @@ Flask 路由: /api/chat
 
 ```
 main.py → launch(port=5000)
-    ├─ 1. _init_session()   → 创建 ChatSession + 注入 system prompt
-    ├─ 2. run_server(daemon) → Flask 在后台线程启动
+    ├─ 1. get_slot("main")     → 建主会话槽（ChatSession + system prompt + 该槽上次的来源）
+    ├─ 2. run_server(daemon)   → Flask 在后台线程启动（所有窗口共用这一个服务）
     ├─ 3. _wait_server_ready() → 轮询等待 Flask 就绪（端口冲突自动换空闲端口）
-    ├─ 4. webview.create_window → 创建窗口加载 http://127.0.0.1:5000
-    └─ 5. webview.start()   → 事件循环（阻塞）
-                              → 窗口关闭后自动保存对话
+    ├─ 4. _open_slot_window    → 主窗口加载 http://127.0.0.1:5000/?slot=main
+    ├─ 5. webview.start()      → 事件循环（阻塞，直到所有窗口都关闭）
+    │      └─ 「新窗口」按钮 → POST /api/new-window → 同进程再开一个 ?slot=sN 的窗口
+    └─ 6. _save_all_slots()    → 退出前逐槽兜底保存
 ```
+
 
 ## 扩展指南
 

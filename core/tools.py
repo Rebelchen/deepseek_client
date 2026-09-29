@@ -1,8 +1,13 @@
-"""
-文件操作工具集 — 供 AI 通过 Function Calling 调用
+"""工具集 — 供 AI 通过 Function Calling 调用。
 
-AI 在对话中可以主动调用以下工具来读写本地文件。
-所有操作被限制在项目目录内，防止越权访问。
+包含：
+  - 本地文件工具：read_file / write_file / list_files / get_file_info
+  - 联网工具：web_search（Bing RSS 搜索）/ fetch_webpage（抓取网页正文）
+
+文件工具说明：
+  - 读文件不限制路径，写文件统一重定向到「总结」目录，防止越权覆盖。
+联网工具说明：
+  - 实现见 core/search.py，全部基于 Python 标准库，无需额外 API Key。
 """
 
 import os
@@ -10,6 +15,7 @@ import time
 import json
 
 from config import PROJECT_ROOT
+from core.search import fetch_webpage, search_web
 
 
 # AI 可访问的工作目录（限制在项目内，防止乱删东西）
@@ -92,6 +98,48 @@ TOOLS = [
                     }
                 },
                 "required": ["filepath"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "联网搜索网页，返回标题、链接和摘要。用于回答时效性问题、核实事实、查找最新信息（如新模型、价格、新闻、数据）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词，建议具体、简洁，中英文均可"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "返回结果条数，1-10，默认 5"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_webpage",
+            "description": "抓取指定网页并提取可读正文（去除 HTML 标签）。搜索结果摘要不够时，用此工具打开完整页面阅读。仅支持 http/https。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "网页完整 URL，如 https://platform.deepseek.com/..."
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "最多返回字符数，默认 6000，上限 20000"
+                    }
+                },
+                "required": ["url"]
             }
         }
     },
@@ -246,6 +294,8 @@ TOOL_MAP = {
     "write_file": write_file,
     "list_files": list_files,
     "get_file_info": get_file_info,
+    "web_search": search_web,
+    "fetch_webpage": fetch_webpage,
 }
 
 
