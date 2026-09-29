@@ -10,12 +10,12 @@
 - 所有 `/api/*` 按 slot 定位会话（GET 用 `?slot=`，POST 用请求体 `slot`；缺省 `main` 即改造前的唯一会话，老行为不变）；新增 `/api/new-window`，新窗口沿用发起方的来源/模型但不共用上下文，槽编号只增不复用
 - `ui_state.json` 的来源/模型改为按槽分键（`slots.{槽id}.source/model`），各窗口记住自己的来源；原扁平记录视为主槽记录继续兼容读取，`pageZoom` 仍全局共享
 - 同一个窗口内再次发起生成会被拒（409）并提示先停止或等待结束——防止两条流并发写坏同一份上下文
-- 新增小米 MiMo 来源（`https://api.xiaomimimo.com/v1`，OpenAI 兼容端点），模型 `mimo-v2.6-flash` / `mimo-v2.6-pro`（1M 上下文、最大输出 128k、思考链展示、支持识图）；密钥通过环境变量 `XIAOMI_MIMO_API_KEY` 提供。实测该 Key 只认按量端点，打 `token-plan-cn.xiaomimimo.com` 返回 401 `invalid_key`；思考默认开启且该端点会忽略采样参数（`temperature` / `top_p` 被强制回默认值），又无 `reasoning_effort` 档位（只有 `thinking.type` 开/关），故本来源 `supports_reasoning_effort=False`
-- 新增阶跃星辰 StepFun 来源（`https://api.stepfun.com/v1`，OpenAI 兼容端点），模型 `step-5-preview`（Step 5 Preview：1M 上下文、最大输出 64k、思考链展示、支持识图）；密钥通过环境变量 `STEPFUN_API_KEY` 提供。实测该 Key 走按量端点可用，打 Step Plan 订阅通道 `/step_plan/v1` 返回 400 `you have no active step plan subscription`；`reasoning_effort` 三档 `low`/`medium`/`high` 生效（思考长度随档位递增），故本来源 `supports_reasoning_effort=True`
-- opencode GO 新增模型 `deepseek-v4.1-flash`（网关 2026-09-10 上架，支持图片输入，价格与 `deepseek-v4-flash` 相同）
+- 新增小米 MiMo 来源（OpenAI 兼容端点），模型 `mimo-v2.6-flash` / `mimo-v2.6-pro`（1M 上下文、最大输出 128k、思考链展示、支持识图）；密钥通过环境变量 `XIAOMI_MIMO_API_KEY` 提供。该来源思考默认开启且会忽略采样参数、无 `reasoning_effort` 档位，故 `supports_reasoning_effort=False`
+- 新增阶跃星辰 StepFun 来源（OpenAI 兼容端点），模型 `step-5-preview`（Step 5 Preview：1M 上下文、最大输出 64k、思考链展示、支持识图）；密钥通过环境变量 `STEPFUN_API_KEY` 提供。官方支持 `reasoning_effort` 三档 `low`/`medium`/`high`，故 `supports_reasoning_effort=True`
+- opencode GO 新增模型 `deepseek-v4.1-flash`（支持图片输入）
 - 多 API 来源支持：新增 opencode GO 套餐来源（`https://opencode.ai/zen/go/v1`），模型 `deepseek-v4-flash` / `deepseek-v4-pro`
 - 新增智谱 BigModel 来源（`https://open.bigmodel.cn/api/paas/v4`，OpenAI 兼容端点），模型 `glm-5.3-flash`；密钥通过环境变量 `ZBIGMODEL_API_KEY` 提供
-- 新增阿里云百炼 Token Plan 来源（`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，OpenAI 兼容端点），模型 `qwen3.8-flash` / `qwen3.8-max`（均默认开启思考、支持识图）；密钥通过环境变量 `BAILIAN_TOKEN_PLAN_API_KEY` 提供。Token Plan 的 `sk-sp-` Key 必须走套餐专属端点，跨区域端点返回 401
+- 新增阿里云百炼 Token Plan 来源（OpenAI 兼容端点），模型 `qwen3.8-flash` / `qwen3.8-max`（均默认开启思考、支持识图）；密钥通过环境变量 `BAILIAN_TOKEN_PLAN_API_KEY` 提供。套餐 Key 必须配 Token Plan 专属端点使用
 - 图片识别：`glm-5.3-flash` 支持发送图片（🖼️ 按钮选图 / 输入框直接粘贴截图，PNG/JPG/WebP/GIF，最多 4 张、单张 ≤5MB）；不支持识图的来源/模型自动降级——图片转为「[图片 xN]」占位符继续对话，历史记录不落盘 base64
 - 页面缩放：`Ctrl+滚轮` / `Ctrl+=` / `Ctrl+-` / `Ctrl+0` 整页等比缩放（50%~200%，效果与浏览器网页缩放一致），比例持久化到本地 `ui_state.json`（跨端口/重启稳定），无记录时默认 100%
 - 输入框换行：`Shift+Enter` / `Ctrl+Enter` / `Alt+Enter` 均可换行（仅裸 `Enter` 发送）；输入法候选确认的 Enter 不再误发送
@@ -31,7 +31,7 @@
 - 密钥缺失时弹窗提示（`pythonw` 静默启动也能看到错误）
 
 ### 变更
-- 默认来源改为 `opencode_go`（DeepSeek 官方 API 涨价后成本更低）
+- 默认来源改为 `opencode_go`
 - 对齐 DeepSeek 官网最新模型：官方来源模型改为 `deepseek-flash`（DeepSeek-V4.1-Flash，思考模式默认开启）与 `deepseek-v4-pro`，移除已下线的旧模型名 `deepseek-v4-flash` / `deepseek-chat` / `deepseek-reasoner`
 - 识图能力扩充：官方 `deepseek-flash`、opencode GO `deepseek-v4.1-flash` 支持图片输入（官方/GO 的 `deepseek-v4-pro` 与 GO 的 `deepseek-v4-flash` 不支持），图片入口的灰色提示同步更新
 - 思考模型改由 `SOURCES[*].reasoning_models` 显式声明（替代模型名子串匹配，避免 `glm-5.3-flash` 被误判为思考模型），`REASONING_EFFORT` 取值对齐官网 `low` / `high` / `max`，默认 `high`

@@ -15,12 +15,12 @@
 | `VERSION` | str | 当前版本号 |
 | `SOURCE` | str | 默认 API 来源：`opencode_go` / `official` / `zbigmodel` / `bailian_token_plan` / `stepfun` / `xiaomi_mimo`（环境变量 `SOURCE` 覆盖） |
 | `SOURCES` | dict | 各来源完整配置（端点、密钥、模型列表、能力开关），界面下拉框与 `ChatSession.configure()` 的唯一事实来源 |
-| `DEEPSEEK_API_KEY` | str | DeepSeek 官方 API 密钥（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
-| `OPENCODE_GO_API_KEY` | str | opencode GO 套餐 API Key（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
-| `ZBIGMODEL_API_KEY` | str | 智谱开放平台（BigModel）API Key（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
-| `BAILIAN_TOKEN_PLAN_API_KEY` | str | 阿里云百炼 Token Plan 套餐专用 API Key，`sk-sp-` 开头，只能配 Token Plan 专属端点（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
-| `STEPFUN_API_KEY` | str | 阶跃星辰（StepFun）开放平台 API Key，无 `sk-` 前缀的长随机串，配按量端点 `https://api.stepfun.com/v1`（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
-| `XIAOMI_MIMO_API_KEY` | str | 小米 MiMo 开放平台 API Key，`sk-` 开头，配按量端点 `https://api.xiaomimimo.com/v1`；`token-plan-*` 套餐端点不认它（仅环境变量提供，推荐写入虚拟环境激活脚本，禁止硬编码） |
+| `DEEPSEEK_API_KEY` | str | DeepSeek 官方 API 密钥（仅环境变量提供，禁止硬编码） |
+| `OPENCODE_GO_API_KEY` | str | opencode GO 套餐 API Key（仅环境变量提供，禁止硬编码） |
+| `ZBIGMODEL_API_KEY` | str | 智谱开放平台（BigModel）API Key（仅环境变量提供，禁止硬编码） |
+| `BAILIAN_TOKEN_PLAN_API_KEY` | str | 阿里云百炼 Token Plan 套餐专用 API Key（仅环境变量提供，禁止硬编码；须配套餐专属端点） |
+| `STEPFUN_API_KEY` | str | 阶跃星辰（StepFun）开放平台 API Key（仅环境变量提供，禁止硬编码） |
+| `XIAOMI_MIMO_API_KEY` | str | 小米 MiMo 开放平台 API Key（仅环境变量提供，禁止硬编码） |
 | `API_KEY` | str | 兼容别名，等价于 `DEEPSEEK_API_KEY` |
 | `BASE_URL` | str | 默认来源的 API 端点地址（运行中切换后以 `ChatSession` 内部值为准） |
 | `MODEL` | str | 默认来源的默认模型（运行中切换后以 `ChatSession` 内部值为准） |

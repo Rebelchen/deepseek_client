@@ -24,6 +24,10 @@ chroma_db/
 history_backup_*/
 ui_state.json
 
+# Agent / tool scratch dirs (会话暂存、worktree 等，不属于仓库)
+.qwen/
+.claude/
+
 # Test / cache
 .pytest_cache/
 

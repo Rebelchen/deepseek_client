@@ -80,42 +80,17 @@ pip install -e .
 
 ### 2. 配置 API Key
 
-支持六个 API 来源。**密钥只通过环境变量注入（推荐写入虚拟环境激活脚本），代码不读取任何 `.env` 文件，仓库中不保存真实密钥。**
+密钥**只通过环境变量注入**：代码不读取任何 `.env` 文件，仓库中不保存真实密钥。
+支持的来源、各自的密钥变量名与端点/模型清单见 [docs/API.md](docs/API.md)（或直接看 `config.py` 的 `SOURCES`）。
 
-| 来源 | 说明 | 密钥变量 |
-|------|------|----------|
-| **opencode GO**（默认） | 低价订阅套餐，端点 `https://opencode.ai/zen/go/v1`，模型 `deepseek-v4-flash` / `deepseek-v4.1-flash`（支持识图）/ `deepseek-v4-pro` | `OPENCODE_GO_API_KEY` |
-| **DeepSeek 官方 API** | 官方平台，模型 `deepseek-flash`（DeepSeek-V4.1-Flash，支持识图）/ `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
-| **智谱 BigModel** | OpenAI 兼容平台，端点 `https://open.bigmodel.cn/api/paas/v4`，模型 `glm-5.3-flash` | `ZBIGMODEL_API_KEY` |
-| **百炼 Token Plan** | 阿里云百炼 Token Plan 订阅，端点 `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，模型 `qwen3.8-flash` / `qwen3.8-max`（均支持识图） | `BAILIAN_TOKEN_PLAN_API_KEY` |
-| **阶跃 Step 5** | 阶跃星辰开放平台（按量计费），端点 `https://api.stepfun.com/v1`，模型 `step-5-preview`（1M 上下文、支持识图、`reasoning_effort` 三档） | `STEPFUN_API_KEY` |
-| **小米 MiMo** | 小米 MiMo 开放平台（按量计费），端点 `https://api.xiaomimimo.com/v1`，模型 `mimo-v2.6-flash` / `mimo-v2.6-pro`（1M 上下文、支持识图、思考默认开启） | `XIAOMI_MIMO_API_KEY` |
-
-**推荐方式：写入虚拟环境激活脚本**（每次 activate 自动注入）：
+推荐用脚本一次性写进虚拟环境激活脚本（激活即生效，`启动.bat` 会自动激活）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup_venv_keys.ps1
-# 按提示输入各密钥（可回车沿用用户级已存值），随后激活 venv 即自动生效
 ```
 
-**临时方式：当前会话临时设置**（不持久化，适合临时测试）：
+临时测试也可以只在当前会话设置，例如 `$env:OPENCODE_GO_API_KEY = "…"`。
 
-```powershell
-$env:OPENCODE_GO_API_KEY = "oc-你的密钥"
-```
-
-> 密钥获取：
-> - opencode GO：[opencode.ai/auth](https://opencode.ai/auth) 订阅 Go 后在控制台复制
-> - DeepSeek 官方：[platform.deepseek.com](https://platform.deepseek.com)
-> - 智谱 BigModel：[open.bigmodel.cn](https://open.bigmodel.cn) 控制台「API Keys」页创建
-> - 百炼 Token Plan：阿里云百炼控制台订阅 Token Plan 后获取**套餐专用** Key（`sk-sp-` 开头）。
->   该 Key 只能配 Token Plan 专属端点使用，换通用 DashScope 地址会改按量计费，跨区域端点会 401
-> - 阶跃星辰：[platform.stepfun.com](https://platform.stepfun.com) 控制台「API Keys」页创建，
->   为无 `sk-` 前缀的长随机串。该 Key 走按量端点 `https://api.stepfun.com/v1`；
->   打 Step Plan 订阅通道 `/step_plan/v1` 会返回 400 `you have no active step plan subscription`
-> - 小米 MiMo：[platform.xiaomimimo.com](https://platform.xiaomimimo.com) 创建（`sk-` 开头）。
->   按量端点为 `https://api.xiaomimimo.com/v1`，`api-key` 与 `Authorization: Bearer` 两种请求头
->   都接受；套餐通道 `token-plan-cn/sgp/ams.xiaomimimo.com` 不认按量 Key（实测 401 `invalid_key`）
 
 ### 3. 启动
 
